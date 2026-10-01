@@ -1,0 +1,5 @@
+state/
+reports/
+clones/
+__pycache__/
+*.pyc
