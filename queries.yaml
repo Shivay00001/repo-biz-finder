@@ -1,0 +1,10 @@
+# Default search presets — business-relevant, actively maintained repos.
+# Qualifiers: stars:>300 filters toy projects; pushed:>2025-06-01 keeps it maintained.
+dev-tools: "stars:>300 pushed:>2025-06-01 topic:developer-tools"
+ai-tools: "stars:>300 pushed:>2025-06-01 topic:ai"
+self-hosted: "stars:>500 pushed:>2025-06-01 topic:self-hosted"
+business-apps: "stars:>200 pushed:>2025-06-01 topic:business"
+productivity: "stars:>300 pushed:>2025-06-01 topic:productivity"
+marketing: "stars:>200 pushed:>2025-06-01 topic:marketing"
+dashboard: "stars:>300 pushed:>2025-06-01 topic:dashboard"
+automation: "stars:>300 pushed:>2025-06-01 topic:automation"
