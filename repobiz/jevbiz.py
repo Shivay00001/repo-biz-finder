@@ -22,7 +22,7 @@ MONETIZATION = {
 }
 
 
-def jev_score_repo(repo):
+def jev_score_repo(repo, fast_cash=False):
     state = {
         "repo": repo["full_name"],
         "description": (repo.get("description") or "")[:300],
@@ -32,33 +32,41 @@ def jev_score_repo(repo):
         "topics": (repo.get("topics") or [])[:8],
         "open_issues": repo.get("open_issues_count", 0),
     }
-    payload = {
-        "model": "jev-latest",
-        "state": state,
-        "questions": {
-            "productizable": {
-                "type": "noul",
-                "instructions": (
-                    "You are evaluating an open-source GitHub repository as a raw "
-                    "material for a solo developer's software-product business. "
-                    "Consider: does it solve a real painful problem for businesses "
-                    "or developers? Is it the kind of thing people pay for (hosting, "
-                    "convenience, white-label, done-for-you)? Is the scope small enough "
-                    "for one person to productize in weeks, not years? "
-                    "Answer yes if this repo can realistically become a sellable "
-                    "software product business with reasonable effort."
-                ),
-            },
-            "model": {
-                "type": "choice",
-                "instructions": (
-                    "Pick the single best monetization model for turning this "
-                    "open-source repo into a revenue-generating business."
-                ),
-                "criteria": MONETIZATION,
-            },
+    questions = {
+        "productizable": {
+            "type": "noul",
+            "instructions": (
+                "You are evaluating an open-source GitHub repository as a raw "
+                "material for a solo developer's software-product business. "
+                "Consider: does it solve a real painful problem for businesses "
+                "or developers? Is it the kind of thing people pay for (hosting, "
+                "convenience, white-label, done-for-you)? Is the scope small enough "
+                "for one person to productize in weeks, not years? "
+                "Answer yes if this repo can realistically become a sellable "
+                "software product business with reasonable effort."
+            ),
+        },
+        "model": {
+            "type": "choice",
+            "instructions": (
+                "Pick the single best monetization model for turning this "
+                "open-source repo into a revenue-generating business."
+            ),
+            "criteria": MONETIZATION,
         },
     }
+    if fast_cash:
+        questions["fast_cash"] = {
+            "type": "noul",
+            "instructions": (
+                "Same repo, same solo developer with zero budget. Answer yes if "
+                "this could realistically generate its FIRST revenue within 60 "
+                "days of focused work — i.e. the product is close to sellable, "
+                "the buyers are easy to reach, and no long R&D or heavy "
+                "infrastructure is needed first."
+            ),
+        }
+    payload = {"model": "jev-latest", "state": state, "questions": questions}
     proc = subprocess.run(
         ["python3", str(JEV_PY)],
         input=json.dumps(payload),
@@ -76,8 +84,13 @@ def jev_score_repo(repo):
         prob = prob.get("yes", 0)
     # choice shape: {"type": "choice", "choice": "hosted_saas",
     #                "probabilities": {...}, "confidence": 0.58}
+    fast = answers.get("fast_cash", {}) or {}
+    fast_p = fast.get("noul", fast.get("probability", fast.get("p", 0)))
+    if isinstance(fast_p, dict):
+        fast_p = fast_p.get("yes", 0)
     return {
         "productizable_p": round(float(prob or 0), 3),
+        "fast_cash_p": round(float(fast_p or 0), 3),
         "model": model.get("choice") or model.get("value"),
         "model_dist": model.get("probabilities") or model.get("distribution", {}),
         "model_confidence": model.get("confidence"),

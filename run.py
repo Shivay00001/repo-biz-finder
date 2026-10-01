@@ -14,6 +14,7 @@ Pipeline per query:
 """
 
 import argparse
+import json
 import sys
 import time
 import yaml
@@ -112,6 +113,152 @@ def run_query(query, max_items=30, top=5, dry_run=False, tag="custom"):
     return picked
 
 
+STATE_DIR = BASE / "state"
+SEEN_FILE = STATE_DIR / "seen.json"
+
+
+def load_seen():
+    try:
+        return json.loads(SEEN_FILE.read_text())
+    except Exception:
+        return {}
+
+
+def save_seen(seen):
+    STATE_DIR.mkdir(exist_ok=True)
+    SEEN_FILE.write_text(json.dumps(seen, indent=1))
+
+
+def prune_old_clones(days=14):
+    """Delete clone dirs older than `days` (briefs/reports are kept)."""
+    now = time.time()
+    pruned = 0
+    if CLONES.exists():
+        for d in CLONES.iterdir():
+            if d.is_dir() and (now - d.stat().st_mtime) > days * 86400:
+                import shutil
+                shutil.rmtree(d, ignore_errors=True)
+                pruned += 1
+    return pruned
+
+
+def run_daily10(max_per_query=25, jev_pool_size=25, top=10, prune_days=14):
+    """Daily hunt: all presets -> dedupe -> license+quality -> Jev
+    (productizable + fast_cash) -> top 10 cash-ranked -> clone + brief."""
+    presets = yaml.safe_load((BASE / "queries.yaml").read_text())
+    seen = load_seen()
+    print(f"Seen repos tracked: {len(seen)}")
+
+    all_candidates = []
+    for tag, q in presets.items():
+        try:
+            results = github_api.search_repos(q, per_page=max_per_query)
+        except Exception as e:
+            print(f"  search FAILED [{tag}]: {e}")
+            continue
+        items = results.get("items", [])
+        fresh = 0
+        for item in items:
+            full = item["full_name"]
+            if full in seen:
+                continue
+            if any(c["full_name"] == full for c in all_candidates):
+                continue
+            try:
+                c = process_repo(item)
+            except Exception:
+                continue
+            if c.get("skipped"):
+                continue
+            c["tag"] = tag
+            all_candidates.append(c)
+            fresh += 1
+        print(f"[{tag}] {len(items)} results, {fresh} fresh usable")
+        time.sleep(2)
+
+    if not all_candidates:
+        print("No fresh candidates today.")
+        return []
+
+    # Drop giant repos BEFORE Jev scoring (saves Jev calls + disk).
+    MAX_CLONE_KB = 150_000
+    cloneable = []
+    for c in all_candidates:
+        if (c["repo"].get("size") or 0) > MAX_CLONE_KB:
+            print(f"  skip (too big: {(c['repo']['size'] // 1024)}MB) {c['full_name']}")
+        else:
+            cloneable.append(c)
+    print(f"{len(cloneable)} cloneable candidates after size filter")
+
+    pool = sorted(cloneable, key=lambda c: c["qscore"], reverse=True)[:jev_pool_size]
+    print(f"Jev-scoring {len(pool)} candidates (productizable + fast_cash)...")
+    for c in pool:
+        try:
+            c["jev"] = jevbiz.jev_score_repo(c["repo"], fast_cash=True)
+            j = c["jev"]
+            c["cash_score"] = round(0.5 * j["productizable_p"] + 0.5 * j["fast_cash_p"], 3)
+            print(f"  cash={c['cash_score']} (prod={j['productizable_p']} fast={j['fast_cash_p']}) {c['full_name']}")
+        except Exception as e:
+            print(f"  Jev failed for {c['full_name']}: {e}")
+            c["jev"] = {"productizable_p": 0, "fast_cash_p": 0, "model": None}
+            c["cash_score"] = 0
+        time.sleep(1)
+
+    ranked = sorted(pool, key=lambda c: (c["cash_score"], c["qscore"]), reverse=True)
+    picked = ranked[:top]
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    for c in picked:
+        owner, name = c["full_name"].split("/", 1)
+        dest = CLONES / c["full_name"].replace("/", "__")
+        try:
+            _, fresh = productize.shallow_clone(c["repo"]["clone_url"], dest)
+            print(f"  cloned {'(fresh)' if fresh else '(exists)'} {c['full_name']}")
+        except Exception as e:
+            print(f"  clone FAILED {c['full_name']}: {e}")
+            c["clone_error"] = str(e)
+        if dest.exists():
+            try:
+                ci = github_api.has_ci_workflows(owner, name)
+            except Exception:
+                ci = False
+            readme = github_api.readme_text(owner, name)
+            c["brief"] = productize.write_brief(
+                dest, c["repo"], c["verdict"], c["note"],
+                c["qscore"], c["qparts"], c["jev"], ci, readme,
+            )
+        seen[c["full_name"]] = today
+
+    save_seen(seen)
+    pruned = prune_old_clones(prune_days)
+    print(f"Pruned {pruned} old clone dirs (>={prune_days}d)")
+    write_daily10_report(picked, today)
+    return picked
+
+
+def write_daily10_report(picked, today):
+    REPORTS.mkdir(exist_ok=True)
+    path = REPORTS / f"report-daily10-{today}.md"
+    lines = [f"# Daily 10 — {today}",
+             f"Top 10 cash-ranked repos (Jev productizable + 60-day fast-cash).",
+             ""]
+    for i, c in enumerate(picked, 1):
+        r = c["repo"]
+        lic = r.get("license") or {}
+        j = c["jev"]
+        lines += [
+            f"## {i}. {c['full_name']} — cash {c['cash_score']}",
+            f"- Stars: {r.get('stargazers_count')} | Lang: {r.get('language')} | License: {lic.get('name')} ({c['verdict']})",
+            f"- Quality: {c['qscore']}/100 | Jev: productizable {j['productizable_p']}, fast-cash {j['fast_cash_p']} | Model: {j['model']}",
+            f"- Preset: {c.get('tag')} | {r.get('description') or ''}",
+            f"- Brief: `{c.get('brief') or 'clone failed'}`",
+            "",
+        ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"Report: {path}")
+    return str(path)
+
+
 def write_report(all_picks, tag):
     REPORTS.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y-%m-%d_%H%M")
@@ -140,7 +287,13 @@ def main():
     ap.add_argument("--max", type=int, default=30, help="max search results per query")
     ap.add_argument("--top", type=int, default=5, help="top N to clone+brief per query")
     ap.add_argument("--dry-run", action="store_true", help="score only, no cloning")
+    ap.add_argument("--daily10", action="store_true",
+                    help="daily hunt: all presets, Jev cash-ranked top 10, clone+brief")
     args = ap.parse_args()
+
+    if args.daily10:
+        run_daily10()
+        return
 
     queries = []
     if args.preset:

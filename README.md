@@ -36,7 +36,15 @@ python3 run.py --preset self-hosted --top 5
 
 # All presets
 python3 run.py --preset all --top 3
+
+# Daily hunt: all presets, Jev cash-ranked top 10, clone + brief, dedupe via state/seen.json
+python3 run.py --daily10
 ```
+
+Daily-10 ranking: `cash_score = 0.5 * productizable_p + 0.5 * fast_cash_p`,
+where `fast_cash_p` is Jev's probability of first revenue within 60 days
+for a solo dev with zero budget. Repos >150MB are skipped (disk sanity);
+clones older than 14 days are pruned (briefs and reports are kept).
 
 Presets live in `queries.yaml`: `dev-tools`, `ai-tools`, `self-hosted`,
 `business-apps`, `productivity`, `marketing`, `dashboard`, `automation`.
