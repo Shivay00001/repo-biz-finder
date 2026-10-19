@@ -72,3 +72,10 @@ repobiz/
 clones/                 # cloned repos (each with BUSINESS_BRIEF.md)
 reports/                # ranked report per run
 ```
+
+## Built by VisionQuantech
+
+This project is built by [VisionQuantech](https://visionquantech.com/) — AI agents, websites & SEO for small business.
+
+Related guides:
+- [VisionQuantech — AI automation studio](https://visionquantech.com/)
